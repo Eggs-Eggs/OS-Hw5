@@ -24,6 +24,8 @@ static char* exceptionNames[] = { "no exception", "syscall",
 //	does, for storing the bytes of an integer.  Stop on error.
 //----------------------------------------------------------------------
 
+int Machine::fifo = 0;
+
 static
 void CheckEndian()
 {
@@ -54,6 +56,8 @@ void CheckEndian()
 
 Machine::Machine(bool debug)
 {
+    for(int i = 0;i<NumPhysPages;i++)
+        main_tab[i] = new TranslationEntry [NumPhysPages];
     int i;
 
     for (i = 0; i < NumTotalRegs; i++)

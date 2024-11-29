@@ -116,45 +116,82 @@ bool AddrSpace::Load(char *fileName)
     }
     ASSERT(noffH.noffMagic == NOFFMAGIC);
 
-    // 計算所需的虛擬地址空間大小 (代碼段 + 數據段 + 未初始化段 + 堆疊)
+    // 計算總共需要的虛擬內存大小，包括代碼段、數據段和堆疊空間
     size = noffH.code.size + noffH.initData.size + noffH.uninitData.size + UserStackSize;
-    numPages = divRoundUp(size, PageSize); // 計算需要的虛擬頁面數量
-    size = numPages * PageSize;           // 確保大小對齊到頁邊界
+    numPages = divRoundUp(size, PageSize);
+    size = numPages * PageSize;
 
-    // 檢查是否超出系統允許的最大頁面數
+    // 檢查是否有足夠的內存
     if (numPages > NumPhysPages && kernel->virtualMemoryDisk == NULL) {
         cerr << "Not enough memory for the process, and no virtual memory disk available.\n";
         delete executable;
         return FALSE;
     }
 
-    // 初始化頁面表，分配 `numPages` 條目
+    // 初始化頁表
     pageTable = new TranslationEntry[numPages];
-    for (int i = 0; i < numPages; i++) {
-        pageTable[i].virtualPage = i;  // 每個頁面的虛擬頁面號
-        pageTable[i].physicalPage = -1; // 初始未分配物理頁面
-        pageTable[i].valid = FALSE;    // 頁面默認為無效
+    for (unsigned int i = 0; i < numPages; i++) {
+        pageTable[i].virtualPage = i;   // 虛擬頁面號
+        pageTable[i].physicalPage = -1; // 尚未分配物理頁
+        pageTable[i].valid = FALSE;    // 頁面默認無效
         pageTable[i].use = FALSE;
         pageTable[i].dirty = FALSE;
-        pageTable[i].readOnly = FALSE; // 默認可讀寫
+        pageTable[i].readOnly = FALSE; // 頁面可讀寫
+        pageTable[i].count = 0;
     }
 
     DEBUG(dbgAddr, "Initializing address space: " << numPages << " pages, total size " << size);
 
-    // 處理代碼段
-    if (noffH.code.size > 0) {
-        DEBUG(dbgAddr, "Loading code segment...");
-        LoadSegment(executable, noffH.code.inFileAddr, noffH.code.size, noffH.code.virtualAddr);
-    }
+    // 處理所有段（代碼段 + 數據段）
+    unsigned int startAddr = 0; // 文件中段的起始地址
+    unsigned int totalSize = noffH.code.size + noffH.initData.size; // 總的需要初始化的段大小
 
-    // 處理數據段
-    if (noffH.initData.size > 0) {
-        DEBUG(dbgAddr, "Loading data segment...");
-        LoadSegment(executable, noffH.initData.inFileAddr, noffH.initData.size, noffH.initData.virtualAddr);
+    unsigned int pageOffset = 0; // 起始的頁偏移量
+    DEBUG(dbgAddr, "totalSize: " << totalSize);
+    for (unsigned int i = 0; i < PageSize * numPages; i += PageSize) {
+        unsigned int vpn = (startAddr + i) / PageSize; // 計算虛擬頁面號
+        unsigned int copySize = min(PageSize - pageOffset, totalSize - i); // 計算每次加載的字節數
+
+        // 查找空閒物理頁面
+        int freePage = -1;
+        for (unsigned int j = 0; j < NumPhysPages; j++) {
+            if (!kernel->machine->usedPhyPage[j]) {
+                freePage = j;
+                kernel->machine->usedPhyPage[j] = TRUE;
+                break;
+            }
+        }
+
+        if (freePage != -1) {
+            DEBUG(dbgAddr, "Free physical page, swapping to mainMemory..."<<"add Page :" <<freePage);
+            // 分配物理頁
+            pageTable[vpn].physicalPage = freePage;
+            pageTable[vpn].valid = TRUE;
+
+            // 從文件中加載數據到內存
+            executable->ReadAt(&(kernel->machine->mainMemory[freePage * PageSize + pageOffset]),
+                               copySize, noffH.code.inFileAddr + i);
+        } else {
+            // 處理虛擬內存：如果內存不足，則將頁寫入交換區
+            DEBUG(dbgAddr, "No free physical page, swapping to disk...");
+
+            char *buffer = new char[PageSize];
+            executable->ReadAt(buffer, copySize, noffH.code.inFileAddr + i);
+
+            unsigned int swapPage = FindSwapPage();
+            kernel->machine->usedvirPage[swapPage] = TRUE;
+            kernel->virtualMemoryDisk->WriteSector(swapPage, buffer);
+
+            pageTable[vpn].virtualPage = swapPage;
+            pageTable[vpn].valid = FALSE;
+            delete[] buffer;
+        }
+
+        pageOffset = 0; // 後續頁面對齊
     }
 
     delete executable; // 關閉文件
-    return TRUE;       // 成功
+    return TRUE;
 }
 
 void AddrSpace::LoadSegment(OpenFile *executable, int inFileAddr, int segmentSize, int virtualAddr) 

@@ -16,6 +16,13 @@
 #include "filesys.h"
 #include "machine.h"
 #include "synchdisk.h"
+
+enum VMType
+{
+  VM_FIFO,
+  VM_LRU
+};
+
 class SynchDisk;
 class UserProgKernel : public ThreadedKernel {
   public:
@@ -34,7 +41,7 @@ class UserProgKernel : public ThreadedKernel {
     FileSystem *fileSystem;
   
     SynchDisk *virtualMemoryDisk;
-
+    VMType vmtype = VMType::VM_FIFO;
 #ifdef FILESYS
     SynchDisk *synchDisk;
 #endif // FILESYS

@@ -205,6 +205,12 @@ Machine::Translate(int virtAddr, int* physAddr, int size, bool writing)
 // from the virtual address
     vpn = (unsigned) virtAddr / PageSize;
     offset = (unsigned) virtAddr % PageSize;
+    // DEBUG(dbgAddr,"pageTable[vpn].virtualPage" <<pageTable[vpn].virtualPage );
+    // DEBUG(dbgAddr,"pageTable[vpn].physicalPage "<<pageTable[vpn].physicalPage );
+    // DEBUG(dbgAddr,"pageTable[vpn].valid " <<pageTable[vpn].valid);
+    // DEBUG(dbgAddr,"pageTable[vpn].use"<<pageTable[vpn].use );
+    // DEBUG(dbgAddr,"pageTable[vpn].dirty "<<pageTable[vpn].dirty);
+    // DEBUG(dbgAddr,"pageTable[vpn].readOnly "<<pageTable[vpn].readOnly );
     
     if (tlb == NULL) {		// => page table => vpn is index into table
 	if (vpn >= pageTableSize) {
@@ -212,10 +218,74 @@ Machine::Translate(int virtAddr, int* physAddr, int size, bool writing)
 	    return AddressErrorException;
 	} else if (!pageTable[vpn].valid) {
             /* 		Add Page fault code here		*/
-            printf("Page fault\n");
-            return PageFaultException;
-	}
-	entry = &pageTable[vpn];
+        printf("page fault\n");
+	    kernel->stats->numPageFaults++;
+	    int j = 0;
+        while(kernel->machine->usedPhyPage[j] != false && j < NumPhysPages){ j++; }
+        if (j < NumPhysPages) {
+            char *buffer;
+            buffer = new char[PageSize]; 
+            kernel->machine->usedPhyPage[j] = true;
+            kernel->machine->PhyPageName[j] = pageTable[vpn].ID;
+
+            kernel->machine->main_tab[j] = &pageTable[vpn];
+            pageTable[vpn].physicalPage = j;
+            pageTable[vpn].valid = true;
+            pageTable[vpn].count++; //for LRU
+
+            kernel->virtualMemoryDisk->ReadSector(pageTable[vpn].virtualPage, buffer);
+            bcopy(buffer, &mainMemory[j * PageSize], PageSize);
+        }
+        else {
+            char *buffer1;
+            buffer1 = new char[PageSize];
+            char *buffer2;
+            buffer2 = new char[PageSize];
+            int victim;
+            //FIFO
+            if (kernel->vmtype == 0){
+                victim = fifo % NumPhysPages; // 32 is NumPhysPages
+            }
+
+            //LRU
+            if (kernel->vmtype == 1) {
+                int min = pageTable[0].count;
+                victim = 0;
+                for(int i = 0; i < NumPhysPages; i++){
+                    printf("%d, ",pageTable[i].count);
+                    if(min > pageTable[i].count){
+                        min = pageTable[i].count;
+                        victim = i;
+                    }
+                } 
+                pageTable[victim].count++;  
+		    }
+    
+
+            printf("page %d swapped\n",victim);
+
+            // 把東西存到 disk 裡面
+            bcopy(&mainMemory[victim * PageSize], buffer1, PageSize);
+            kernel->virtualMemoryDisk->ReadSector(pageTable[vpn].virtualPage, buffer2);
+            bcopy(buffer2, &mainMemory[victim*PageSize], PageSize);
+            kernel->virtualMemoryDisk->WriteSector(pageTable[vpn].virtualPage, buffer1);
+
+
+            main_tab[victim]->virtualPage= pageTable[vpn].virtualPage;
+            main_tab[victim]->valid = false;
+
+            // 把東西 load 到 main memory 中
+            pageTable[vpn].valid = true;
+            pageTable[vpn].physicalPage = victim;
+            kernel->machine->PhyPageName[victim] = pageTable[vpn].ID;
+            main_tab[victim] = &pageTable[vpn];
+            fifo ++;
+            delete[] buffer1;
+            delete[] buffer2;
+	    }
+
+	    }
+	    entry = &pageTable[vpn];
     } else {
         for (entry = NULL, i = 0; i < TLBSize; i++)
     	    if (tlb[i].valid && (tlb[i].virtualPage == vpn)) {
